@@ -1,136 +1,125 @@
 # German Electricity Market — Spread Forecasting
 
-**Ensimag IF · Algorithmic Trading 2025 · Kaggle Competition**
+**Ensimag IF · Algorithmic Trading 2025 · [Kaggle Competition](https://www.kaggle.com/competitions/ensimag-if-2025)**
 
-A machine learning model to forecast short-term price imbalances in the German electricity market. The objective is to generate trading signals that maximise cumulative Profit & Loss (PnL), not prediction accuracy.
+Forecasting the spread between the German day-ahead and real-time imbalance electricity markets, scored on simulated trading PnL rather than prediction error.
 
-> **Leaderboard result:** ~€7.2M cumulative PnL · Rank ≈ Top 15 (public)
+> **Result: €18,950,726 cumulative PnL · 6th of 46 teams · 9.5× the competition's naive baseline**
 
 ---
 
 ## The Problem
 
-Every 15 minutes, the German grid must balance real-time supply and demand. When renewable generation or demand is mis-forecast, the **Imbalance Price** diverges from the **Day-Ahead Price**. The task is to predict that divergence:
+Every 15 minutes the German grid settles the difference between what generators promised on the day-ahead market and what was actually delivered. When renewable output or demand is mis-forecast, the **imbalance price** diverges from the **day-ahead price**:
 
 ```
-Spread = Imbalance Price − Day-Ahead Price
+spread = imbalance price − day-ahead price
 ```
 
-The platform applies a fixed trading rule based on the prediction:
+- **spread > 0** — grid is tighter than expected (deficit); expensive peaking plant is called, price rises
+- **spread < 0** — grid is looser than expected (surplus); excess generation, price falls
 
-| Predicted Spread | Action |
+The platform applies a fixed rule to the forecast and reports the resulting PnL:
+
+| predicted spread | action |
 |---|---|
-| ≥ 0 (deficit) | Buy 50 MW on Day-Ahead (long) |
-| < 0 (surplus) | Sell 50 MW on Day-Ahead (short) |
+| ≥ 0 | buy 50 MW day-ahead (long) |
+| < 0 | sell 50 MW day-ahead (short) |
+| any, when \|imbalance price\| > €1000 | no position (too risky) |
 
-**Score = total simulated profit in euros** over the 2024 test period.
-
----
-
-## Key Insight
-
-Electricity imbalance costs are non-linear. At high renewable penetration (>30–35%), small forecast errors cause extreme price swings due to a steep supply curve. The model captures this with polynomial renewable penetration features.
-
----
-
-## Repository Structure
-
-```
-.
-├── README.md
-├── OVERVIEW.md                         # Detailed project overview and modelling approach
-├── RESEARCH.md                         # Domain research: energy market economics
-├── START.md                            # Quick start guide and feature ideas
-├── improved_starter_notebook.py        # Clean Python implementation
-├── ensimag-trading-if-2025-2.ipynb     # Full Jupyter notebook (EDA + model + CV)
-├── baseline_submission.csv             # Baseline submission file
-└── data/
-    ├── train.csv                       # Training data 2020–2023 (~105k rows)
-    ├── test.csv                        # Test data 2024 (24,138 rows)
-    ├── imbalances.csv                  # Real imbalance prices for PnL evaluation
-    └── sample.csv                      # Sample submission format
-```
+**Only the sign of the forecast is used.** The magnitude is discarded.
 
 ---
 
 ## Data
 
-Each row is a 15-minute market observation:
+15-minute observations of `wind`, `solar`, `load` (all MW) and `spread` (€/MWh).
 
-| Column | Description |
-|---|---|
-| `date` | Timestamp |
-| `wind` | Wind generation (MW) |
-| `solar` | Solar generation (MW) |
-| `load` | Electricity demand (MW) |
-| `spread` | Target: Imbalance − Day-Ahead price (€/MWh) |
+| | rows | period |
+|---|---|---|
+| train | 140,157 | 2020-01-01 → 2023-12-31 |
+| test | 24,138 | 2024-01-01 → 2024-09-08 |
 
-**Training:** 2020–2023 · **Test:** 2024
-**Spread range:** −€9,271 to +€15,781 (extreme tail events matter)
+The target is close to a coin flip (P(spread ≥ 0) = 51.0%) with extreme tails: median €3.23, but a range of −€9,271 to +€15,781. Competition rules permit no external data.
 
 ---
 
-## Modelling Approach
+## Approach
 
-### Feature Engineering
+### Train the objective that is actually scored
 
-```python
-# Renewable penetration (with non-linear terms)
-df['renewable_pct']  = (df['wind'] + df['solar']) / df['load']
-df['renewable_pct2'] = df['renewable_pct'] ** 2
-df['renewable_pct3'] = df['renewable_pct'] ** 3
+The scorer reads only the sign, so the model classifies `sign(spread)` with `sample_weight = |spread|` rather than regressing the spread level under MSE.
 
-# Net demand (controllable generation required)
-df['net_demand'] = df['load'] - df['wind'] - df['solar']
+Weighting by `|spread|` places the 0.5 probability contour exactly at `E[spread] = 0`, which is the PnL-optimal decision boundary — so no threshold tuning is needed. This was tested: the empirically optimal threshold came out at 0.490, and tuning it was worth +0.4%.
 
-# Ramp rates (rate of change drives imbalances)
-df['wind_ramp']       = df['wind'].diff()
-df['net_demand_ramp'] = df['net_demand'].diff()
+### Exclude rows the scorer discards
 
-# Time structure (intraday seasonality)
-df['hour']       = df['date'].dt.hour
-df['dayofweek']  = df['date'].dt.dayofweek
-df['is_weekend'] = df['dayofweek'].isin([5, 6]).astype(int)
-```
+Rows where `|imbalance| > 1000` are never traded, but because weight is proportional to `|spread|` they were absorbing **7.1% of total training weight** while being 0.41% of rows. Zeroing them was worth +€1.98M on held-out folds and +€1.17M on the leaderboard.
 
-### Model
+### Features
 
-Gradient-boosted decision trees (scikit-learn `GradientBoostingRegressor`, also compatible with XGBoost/LightGBM/CatBoost). Tree-based methods handle the non-linear, regime-switching behaviour of electricity markets well.
+Net demand (`load − wind − solar`) and its lag, ramp, rolling-mean and volatility structure, renewable penetration with polynomial terms, and calendar features. Recency-decayed sample weights (730-day half-life) to track the upward drift in renewable penetration between training and test periods.
 
 ### Validation
 
-Time-series cross-validation (`TimeSeriesSplit`) — train on past, predict future — to avoid look-ahead bias and simulate realistic deployment.
+Walk-forward (`TimeSeriesSplit`) throughout. Hyperparameters and feature sets are selected on early folds and re-scored on later folds that never influenced the choice.
 
 ---
 
-## Setup
+## What Worked and What Didn't
 
-**Requirements:** Python 3.10+
+Every change below was measured on held-out walk-forward folds and then checked against the leaderboard.
 
-```bash
-pip install numpy pandas scikit-learn matplotlib seaborn plotly
+| change | held-out | leaderboard |
+|---|---|---|
+| sign objective + previously unused features | large | **+€7.6M** |
+| recency weighting + expanded lags | +€1.5–4.7M | **+€3.5M** |
+| drop untradable rows from training weights | +€1.98M | **+€1.17M** |
+| hyperparameter tuning | −€1.9M | −€197k |
+| 10-seed averaging | +€1.76M | −€483k |
+| cross-family blend (HistGB + ExtraTrees + RF) | +€897k | −€302k |
+| regime-relative / cyclical features | ~neutral | not submitted |
+
+Two findings worth noting:
+
+**A nested search is not optional.** Ranking hyperparameter configs on all folds made a config look best that then *lost* €1.9M on folds it hadn't influenced — and the leaderboard confirmed it, scoring 14,553,020 against 14,750,344 for the untuned model. A flat search would have shipped a worse model with a confident number attached.
+
+**Measure your noise floor before trusting an effect.** Seed-to-seed variance is ±€1.4M here. A single-seed test suggested regime features cost €3.57M; a matched-seed rerun showed them roughly neutral (+€591k). Every structural change measured well above that floor transferred to the leaderboard; both ensembling changes measured near it went negative.
+
+---
+
+## Repository
+
 ```
-
----
+├── sign_classifier_model.py        # core model, walk-forward PnL, ablation
+├── final_model.py                  # best submission (v5)
+├── tune_sign_classifier.py         # nested hyperparameter search — negative result
+├── experiment_recency_lags.py      # recency weighting + expanded lags
+├── experiment_regime_features.py   # regime-relative features — rejected
+├── final_model_blend.py            # cross-family blend — rejected on leaderboard
+├── improved_starter_notebook.py    # cleaned starter script
+├── ensimag-trading-if-2025-2.ipynb # original notebook
+├── RESEARCH.md                     # domain notes on balancing-cost economics
+├── START.md                        # competition quick-start
+└── data/                           # train, test, imbalances, sample
+```
 
 ## Running
 
-**Python script:**
 ```bash
-python improved_starter_notebook.py
+pip install numpy pandas scikit-learn
+python sign_classifier_model.py   # walk-forward evaluation + submission
+python final_model.py             # best-scoring configuration
 ```
-
-**Jupyter notebook:**
-```bash
-jupyter notebook ensimag-trading-if-2025-2.ipynb
-```
-
-> Note: The notebook uses Kaggle-style data paths (`../input/ensimag-if-2025/`). When running locally, update paths to `data/train.csv` etc.
 
 ---
 
-## References
+## A Note on RESEARCH.md
 
-- ENTSO-E transparency platform — European electricity market data
-- Energy economics research on balancing cost non-linearity at high renewable penetration (see `RESEARCH.md` for summary)
-- Kaggle competition: [Ensimag IF 2025](https://www.kaggle.com/competitions/ensimag-if-2025)
+`RESEARCH.md` summarises an academic paper arguing that balancing costs rise non-linearly above ~30–35% renewable penetration, and the original model was built around polynomial penetration features on that basis.
+
+Tested directly on this dataset, that claim does not hold for the spread. Bucketing training rows by renewable penetration, mean `|spread|` runs 106 / 100 / 94 / 102 / 108 / 115 €/MWh across `<15%` / `15–30%` / `30–35%` / `35–50%` / `50–70%` / `>70%` — a shallow U, with no acceleration at the claimed threshold.
+
+The reconciliation is that the paper measures balancing *cost* (volume × price, a system-wide aggregate) while the competition target is the spread (a per-interval price differential). Cost can grow sharply through volume while the per-MWh gap stays flat.
+
+What *does* hold is directional: P(spread ≥ 0) falls steadily from 55.8% to 44.8% across those same buckets. Since the trading rule reads only the sign, that tilt is the monetizable signal — and it is why `solar` dominates the feature importances.
