@@ -4,7 +4,8 @@ import numpy as np
 import plotly.graph_objects as go
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.ensemble import GradientBoostingRegressor
-from sklearn.model_selection import cross_val_predict
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.base import clone
 
 # Cell 2: Load and explore data
 # Load data
@@ -113,11 +114,18 @@ print(f"Mean: {pred.mean():.2f} €/MWh")
 print(f"Std: {pred.std():.2f} €/MWh")
 
 # Cell 8: OPTIONAL - Cross-validation to estimate performance
-print("Running cross-validation to estimate performance...")
+print("Running walk-forward cross-validation to estimate performance...")
 
-# Get CV predictions
-pred_cv = cross_val_predict(model, x_train, y_train, cv=5, verbose=1)
-pred_cv = pd.Series(pred_cv, index=y_train.index, name='forecast')
+# TimeSeriesSplit, not KFold: each fold may only train on data preceding its
+# validation window, otherwise the model scores 2020 using 2023 information.
+tscv = TimeSeriesSplit(n_splits=5)
+pred_cv = pd.Series(index=y_train.index, dtype=float, name='forecast')
+
+for fold, (tr_idx, val_idx) in enumerate(tscv.split(x_train), start=1):
+    fold_model = clone(model)
+    fold_model.fit(x_train.iloc[tr_idx], y_train.iloc[tr_idx])
+    pred_cv.iloc[val_idx] = fold_model.predict(x_train.iloc[val_idx])
+    print(f"  fold {fold}/5 complete")
 
 # Load imbalances data for PnL calculation
 imbalances = pd.read_csv('/kaggle/input/ensimag-if-2025/imbalances.csv', 
@@ -140,7 +148,10 @@ def calculate_pnl(row):
         return -pos_mw * row['spread']
 
 # Combine predictions with actual data
-concat = pd.concat([pred_cv, imbalances, y_train], axis=1)
+# The earliest fold is never in a validation window, so it has no out-of-fold
+# prediction; without the dropna those rows fall through calculate_pnl's
+# else-branch and get booked as short PnL on a NaN forecast.
+concat = pd.concat([pred_cv, imbalances, y_train], axis=1).dropna(subset=['forecast'])
 concat['pnl'] = concat.apply(calculate_pnl, axis=1)
 concat['pnl_cum'] = concat['pnl'].cumsum()
 
@@ -150,6 +161,6 @@ print(f"\nEstimated Cumulated PnL: €{concat['pnl_cum'].iloc[-1]:,.2f}")
 fig = go.Figure()
 fig.add_trace(go.Scatter(x=concat.index, y=concat['pnl_cum'], 
                          mode='lines', name='Cumulated PnL'))
-fig.update_layout(title='Cross-Validation: Cumulated PnL Over Time',
+fig.update_layout(title='Walk-Forward CV: Cumulated PnL Over Time',
                   xaxis_title='Date', yaxis_title='Cumulated PnL (€)')
 fig.show()
