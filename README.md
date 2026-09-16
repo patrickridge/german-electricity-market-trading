@@ -81,6 +81,7 @@ Every change below was measured on held-out walk-forward folds and then checked 
 | regime-relative / cyclical features | ~neutral | not submitted |
 | same-hour normalisation | −€1.18M | not submitted |
 | per-hour-block specialist models | −€2.95M | not submitted |
+| temporal CNN over the raw series | −€1.92M | not submitted |
 
 Two findings worth noting:
 
