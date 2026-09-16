@@ -79,10 +79,14 @@ Every change below was measured on held-out walk-forward folds and then checked 
 | 10-seed averaging | +€1.76M | −€483k |
 | cross-family blend (HistGB + ExtraTrees + RF) | +€897k | −€302k |
 | regime-relative / cyclical features | ~neutral | not submitted |
+| same-hour normalisation | −€1.18M | not submitted |
+| per-hour-block specialist models | −€2.95M | not submitted |
 
 Two findings worth noting:
 
 **A nested search is not optional.** Ranking hyperparameter configs on all folds made a config look best that then *lost* €1.9M on folds it hadn't influenced — and the leaderboard confirmed it, scoring 14,553,020 against 14,750,344 for the untuned model. A flat search would have shipped a worse model with a confident number attached.
+
+**The score is not a lucky draw.** Twelve single-model variants were submitted to test whether the headline number depended on a fortunate seed. Best of twelve came in €30,591 above the standing submission — a 0.16% move. Single-model test variance is about €411k, and the ten-seed average beat seven of eight individual seeds, so the ensemble earns its score reliably rather than by chance.
 
 **Measure your noise floor before trusting an effect.** Seed-to-seed variance is ±€1.4M here. A single-seed test suggested regime features cost €3.57M; a matched-seed rerun showed them roughly neutral (+€591k). Every structural change measured well above that floor transferred to the leaderboard; both ensembling changes measured near it went negative.
 
@@ -98,7 +102,7 @@ Two findings worth noting:
 ├── experiment_regime_features.py   # regime-relative features — rejected
 ├── final_model_blend.py            # cross-family blend — rejected on leaderboard
 ├── improved_starter_notebook.py    # cleaned starter script
-├── ensimag-trading-if-2025-2.ipynb # original notebook
+├── ensimag-trading-if-2025-2.ipynb # original notebook (walk-forward fix applied)
 ├── RESEARCH.md                     # domain notes on balancing-cost economics
 ├── START.md                        # competition quick-start
 └── data/                           # train, test, imbalances, sample

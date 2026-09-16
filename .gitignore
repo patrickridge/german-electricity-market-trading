@@ -17,3 +17,6 @@ venv/
 # IDE
 .vscode/
 .idea/
+
+# probe artefacts (regenerable via make_probe_batch.py)
+probe/
